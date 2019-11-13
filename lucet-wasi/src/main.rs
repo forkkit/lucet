@@ -6,10 +6,12 @@ extern crate clap;
 use clap::Arg;
 use failure::{format_err, Error};
 use lucet_runtime::{self, DlModule, Limits, MmapRegion, Module, PublicKey, Region, RunResult};
-use lucet_wasi::{hostcalls, WasiCtxBuilder};
+use lucet_wasi::{self, WasiCtxBuilder, __wasi_exitcode_t};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 struct Config<'a> {
     lucet_module: &'a str,
@@ -17,6 +19,7 @@ struct Config<'a> {
     entrypoint: &'a str,
     preopen_dirs: Vec<(File, &'a str)>,
     limits: Limits,
+    timeout: Option<Duration>,
     verify: bool,
     pk_path: Option<PathBuf>,
 }
@@ -37,7 +40,7 @@ fn main() {
     // No-ops, but makes sure the linker doesn't throw away parts
     // of the runtime:
     lucet_runtime::lucet_internal_ensure_linked();
-    hostcalls::ensure_linked();
+    lucet_wasi::export_wasi_funcs();
 
     let matches = app_from_crate!()
         .arg(
@@ -96,6 +99,9 @@ fn main() {
                 .default_value("8 MiB")
                 .help("Maximum stack size (must be a multiple of 4 KiB)"),
         )
+        .arg(
+            Arg::with_name("timeout").long("timeout").takes_value(true).help("Number of milliseconds the instance will be allowed to run")
+            )
         .arg(
             Arg::with_name("guest_args")
                 .required(false)
@@ -163,6 +169,10 @@ fn main() {
         .and_then(|v| parse_humansized(v))
         .unwrap() as usize;
 
+    let timeout = matches
+        .value_of("timeout")
+        .map(|t| Duration::from_millis(t.parse::<u64>().unwrap()));
+
     let limits = Limits {
         heap_memory_size,
         heap_address_space_size,
@@ -184,6 +194,7 @@ fn main() {
         entrypoint,
         preopen_dirs,
         limits,
+        timeout,
         verify,
         pk_path,
     };
@@ -192,7 +203,6 @@ fn main() {
 }
 
 fn run(config: Config<'_>) {
-    lucet_wasi::hostcalls::ensure_linked();
     let exitcode = {
         // doing all of this in a block makes sure everything gets dropped before exiting
         let pk = match (config.verify, config.pk_path) {
@@ -225,9 +235,13 @@ fn run(config: Config<'_>) {
             .chain(config.guest_args.into_iter())
             .collect::<Vec<&str>>();
         let mut ctx = WasiCtxBuilder::new()
-            .args(&args)
+            .expect("wasi context can be built")
+            .args(args.iter())
+            .expect("arguments can be stored")
             .inherit_stdio()
-            .inherit_env();
+            .expect("stdio can be inherited")
+            .inherit_env()
+            .expect("environment can be inherited");
         for (dir, guest_path) in config.preopen_dirs {
             ctx = ctx.preopened_dir(dir, guest_path);
         }
@@ -237,6 +251,16 @@ fn run(config: Config<'_>) {
             .build()
             .expect("instance can be created");
 
+        if let Some(timeout) = config.timeout {
+            let kill_switch = inst.kill_switch();
+            thread::spawn(move || {
+                thread::sleep(timeout);
+                // We may hit this line exactly when the guest exits, so sometimes `terminate` can
+                // fail. That's still acceptable, so just ignore the result.
+                kill_switch.terminate().ok();
+            });
+        }
+
         match inst.run(config.entrypoint, &[]) {
             // normal termination implies 0 exit code
             Ok(RunResult::Returned(_)) => 0,
@@ -245,8 +269,14 @@ fn run(config: Config<'_>) {
             Err(lucet_runtime::Error::RuntimeTerminated(
                 lucet_runtime::TerminationDetails::Provided(any),
             )) => *any
-                .downcast_ref::<lucet_wasi::host::__wasi_exitcode_t>()
+                .downcast_ref::<__wasi_exitcode_t>()
                 .expect("termination yields an exitcode"),
+            Err(lucet_runtime::Error::RuntimeTerminated(
+                lucet_runtime::TerminationDetails::Remote,
+            )) => {
+                println!("Terminated via remote kill switch (likely a timeout)");
+                std::u32::MAX
+            }
             Err(e) => panic!("lucet-wasi runtime error: {}", e),
         }
     };

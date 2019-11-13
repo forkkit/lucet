@@ -28,17 +28,17 @@ RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-6.0 100
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
 RUN curl https://sh.rustup.rs -sSf | \
-    sh -s -- --default-toolchain 1.36.0 -y && \
+    sh -s -- --default-toolchain nightly-2019-09-25 -y && \
         /root/.cargo/bin/rustup update nightly
 ENV PATH=/root/.cargo/bin:$PATH
 
-RUN rustup component add rustfmt --toolchain 1.36.0-x86_64-unknown-linux-gnu
+RUN rustup component add rustfmt --toolchain nightly-2019-09-25-x86_64-unknown-linux-gnu
 RUN rustup target add wasm32-wasi
 
 RUN cargo install --debug cargo-audit cargo-watch rsign2
 
-RUN curl -sS -L -O https://github.com/CraneStation/wasi-sdk/releases/download/wasi-sdk-6/wasi-sdk_6.0_amd64.deb \
-	&& dpkg -i wasi-sdk_6.0_amd64.deb && rm -f wasi-sdk_6.0_amd64.deb
+RUN curl -sS -L -O https://github.com/CraneStation/wasi-sdk/releases/download/wasi-sdk-7/wasi-sdk_7.0_amd64.deb \
+	&& dpkg -i wasi-sdk_7.0_amd64.deb && rm -f wasi-sdk_7.0_amd64.deb
 
 ENV WASI_SDK=/opt/wasi-sdk
 

@@ -128,7 +128,8 @@ extern "C" fn handle_signal(signum: c_int, siginfo_ptr: *mut siginfo_t, ucontext
     if !(signal == Signal::SIGBUS
         || signal == Signal::SIGSEGV
         || signal == Signal::SIGILL
-        || signal == Signal::SIGFPE)
+        || signal == Signal::SIGFPE
+        || signal == Signal::SIGALRM)
     {
         panic!("unexpected signal in guest signal handler: {:?}", signal);
     }
@@ -164,10 +165,25 @@ extern "C" fn handle_signal(signum: c_int, siginfo_ptr: *mut siginfo_t, ucontext
                 .as_mut()
         };
 
+        if signal == Signal::SIGALRM {
+            // if have gotten a SIGALRM, the killswitch that sent this signal must have also
+            // disabled the `terminable` flag. If this assert fails, the SIGALRM came from some
+            // other source, or we have a bug that allows SIGALRM to be sent when they should not.
+            //
+            // TODO: once we have a notion of logging in `lucet-runtime`, this should be a logged
+            // error.
+            debug_assert!(!inst.kill_state.is_terminable());
+
+            inst.state = State::Terminating {
+                details: TerminationDetails::Remote,
+            };
+            return true;
+        }
+
         let trapcode = inst.module.lookup_trapcode(rip);
 
         let behavior = (inst.signal_handler)(inst, &trapcode, signum, siginfo_ptr, ucontext_ptr);
-        match behavior {
+        let switch_to_host = match behavior {
             SignalBehavior::Continue => {
                 // return to the guest context without making any modifications to the instance
                 false
@@ -177,37 +193,62 @@ extern "C" fn handle_signal(signum: c_int, siginfo_ptr: *mut siginfo_t, ucontext
                 inst.state = State::Terminating {
                     details: TerminationDetails::Signal,
                 };
+
                 true
             }
             SignalBehavior::Default => {
-                // safety: pointer is checked for null at the top of the function, and the
-                // manpage guarantees that a siginfo_t will be passed as the second argument
-                let siginfo = unsafe { *siginfo_ptr };
-                let rip_addr = rip as usize;
-                // If the trap table lookup returned unknown, it is a fatal error
-                let unknown_fault = trapcode.is_none();
+                /*
+                 * /!\ WARNING: LOAD-BEARING THUNK /!\
+                 *
+                 * This thunk, in debug builds, introduces multiple copies of UContext in the local
+                 * stack frame. This also includes a local `State`, which is quite large as well.
+                 * In total, this thunk accounts for roughly 5kb of stack use, where default signal
+                 * stack sizes are typically 8kb total.
+                 *
+                 * In code paths that do not pass through this (such as immediately reraising as a
+                 * host signal), the code in this thunk would force an exhaustion of more than half
+                 * the stack, significantly increasing the likelihood the Lucet signal handler may
+                 * overflow some other thread with a minimal stack size.
+                 */
+                let mut thunk = || {
+                    // safety: pointer is checked for null at the top of the function, and the
+                    // manpage guarantees that a siginfo_t will be passed as the second argument
+                    let siginfo = unsafe { *siginfo_ptr };
+                    let rip_addr = rip as usize;
+                    // If the trap table lookup returned unknown, it is a fatal error
+                    let unknown_fault = trapcode.is_none();
 
-                // If the trap was a segv or bus fault and the addressed memory was outside the
-                // guard pages, it is also a fatal error
-                let outside_guard = (siginfo.si_signo == SIGSEGV || siginfo.si_signo == SIGBUS)
-                    && !inst.alloc.addr_in_heap_guard(siginfo.si_addr_ext());
+                    // If the trap was a segv or bus fault and the addressed memory was outside the
+                    // guard pages, it is also a fatal error
+                    let outside_guard = (siginfo.si_signo == SIGSEGV || siginfo.si_signo == SIGBUS)
+                        && !inst.alloc.addr_in_guard_page(siginfo.si_addr_ext());
 
-                // record the fault and jump back to the host context
-                inst.state = State::Faulted {
-                    details: FaultDetails {
-                        fatal: unknown_fault || outside_guard,
-                        trapcode: trapcode,
-                        rip_addr,
-                        // Details set to `None` here: have to wait until `verify_trap_safety` to
-                        // fill in these details, because access may not be signal safe.
-                        rip_addr_details: None,
-                    },
-                    siginfo,
-                    context: ctx.into(),
+                    // record the fault and jump back to the host context
+                    inst.state = State::Faulted {
+                        details: FaultDetails {
+                            fatal: unknown_fault || outside_guard,
+                            trapcode: trapcode,
+                            rip_addr,
+                            // Details set to `None` here: have to wait until `verify_trap_safety` to
+                            // fill in these details, because access may not be signal safe.
+                            rip_addr_details: None,
+                        },
+                        siginfo,
+                        context: ctx.into(),
+                    };
                 };
+
+                thunk();
                 true
             }
+        };
+
+        if switch_to_host {
+            // we must disable termination so no KillSwitch may fire in host code.
+            inst.kill_state.disable_termination();
         }
+
+        switch_to_host
     });
 
     if switch_to_host {
@@ -225,6 +266,7 @@ struct SignalState {
     saved_sigfpe: SigAction,
     saved_sigill: SigAction,
     saved_sigsegv: SigAction,
+    saved_sigalrm: SigAction,
     saved_panic_hook: Option<Arc<Box<dyn Fn(&panic::PanicInfo<'_>) + Sync + Send + 'static>>>,
 }
 
@@ -237,6 +279,7 @@ unsafe fn setup_guest_signal_state(ostate: &mut Option<SignalState>) {
     masked_signals.add(Signal::SIGFPE);
     masked_signals.add(Signal::SIGILL);
     masked_signals.add(Signal::SIGSEGV);
+    masked_signals.add(Signal::SIGALRM);
 
     // setup signal handlers
     let sa = SigAction::new(
@@ -248,6 +291,7 @@ unsafe fn setup_guest_signal_state(ostate: &mut Option<SignalState>) {
     let saved_sigfpe = sigaction(Signal::SIGFPE, &sa).expect("sigaction succeeds");
     let saved_sigill = sigaction(Signal::SIGILL, &sa).expect("sigaction succeeds");
     let saved_sigsegv = sigaction(Signal::SIGSEGV, &sa).expect("sigaction succeeds");
+    let saved_sigalrm = sigaction(Signal::SIGALRM, &sa).expect("sigaction succeeds");
 
     let saved_panic_hook = Some(setup_guest_panic_hook());
 
@@ -257,6 +301,7 @@ unsafe fn setup_guest_signal_state(ostate: &mut Option<SignalState>) {
         saved_sigfpe,
         saved_sigill,
         saved_sigsegv,
+        saved_sigalrm,
         saved_panic_hook,
     });
 }
@@ -286,6 +331,7 @@ unsafe fn restore_host_signal_state(state: &mut SignalState) {
     sigaction(Signal::SIGFPE, &state.saved_sigfpe).expect("sigaction succeeds");
     sigaction(Signal::SIGILL, &state.saved_sigill).expect("sigaction succeeds");
     sigaction(Signal::SIGSEGV, &state.saved_sigsegv).expect("sigaction succeeds");
+    sigaction(Signal::SIGALRM, &state.saved_sigalrm).expect("sigaction succeeds");
 
     // restore panic hook
     drop(panic::take_hook());
@@ -310,6 +356,7 @@ unsafe fn reraise_host_signal_in_handler(
                 Signal::SIGFPE => state.saved_sigfpe.clone(),
                 Signal::SIGILL => state.saved_sigill.clone(),
                 Signal::SIGSEGV => state.saved_sigsegv.clone(),
+                Signal::SIGALRM => state.saved_sigalrm.clone(),
                 sig => panic!(
                     "unexpected signal in reraise_host_signal_in_handler: {:?}",
                     sig

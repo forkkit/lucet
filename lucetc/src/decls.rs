@@ -16,6 +16,7 @@ use cranelift_wasm::{
 };
 use failure::{format_err, Error, ResultExt};
 use lucet_module::bindings::Bindings;
+use lucet_module::ModuleFeatures;
 use lucet_module::{
     owned::OwnedLinearMemorySpec, ExportFunction, FunctionIndex as LucetFunctionIndex,
     FunctionMetadata, Global as GlobalVariant, GlobalDef, GlobalSpec, HeapSpec, ImportFunction,
@@ -342,6 +343,11 @@ impl<'a> ModuleDecls<'a> {
                         .context(LucetcErrorKind::TranslatingModule)
                     }
                 }
+                GlobalInit::V128Const(_) => Err(format_err!(
+                    "invalid declaration of global {}: v128const type",
+                    ix.as_u32()
+                ))
+                .context(LucetcErrorKind::Unsupported),
             }?;
 
             globals.push(GlobalSpec::new(global, g_decl.export_names.clone()));
@@ -497,7 +503,7 @@ impl<'a> ModuleDecls<'a> {
         }
     }
 
-    pub fn get_module_data(&self) -> Result<ModuleData<'_>, LucetcError> {
+    pub fn get_module_data(&self, features: ModuleFeatures) -> Result<ModuleData<'_>, LucetcError> {
         let linear_memory = if let Some(ref spec) = self.linear_memory_spec {
             Some(spec.to_ref())
         } else {
@@ -543,6 +549,7 @@ impl<'a> ModuleDecls<'a> {
             self.imports.clone(),
             self.exports.clone(),
             signatures,
+            features,
         ))
     }
 }

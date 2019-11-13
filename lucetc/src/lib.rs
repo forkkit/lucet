@@ -22,8 +22,7 @@ mod types;
 
 use crate::load::read_bytes;
 pub use crate::{
-    compiler::Compiler,
-    compiler::OptLevel,
+    compiler::{Compiler, CpuFeatures, OptLevel, SpecificFeature, TargetCpu},
     error::{LucetcError, LucetcErrorKind},
     heap::HeapSettings,
     load::read_module,
@@ -31,6 +30,7 @@ pub use crate::{
 };
 use failure::{format_err, Error, ResultExt};
 pub use lucet_module::bindings::Bindings;
+pub use lucet_validate::Validator;
 use signature::{PublicKey, SecretKey};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -45,8 +45,10 @@ pub struct Lucetc {
     input: LucetcInput,
     bindings: Vec<Bindings>,
     opt_level: OptLevel,
+    cpu_features: CpuFeatures,
     heap: HeapSettings,
     builtins_paths: Vec<PathBuf>,
+    validator: Option<Validator>,
     sk: Option<SecretKey>,
     pk: Option<PublicKey>,
     sign: bool,
@@ -71,8 +73,14 @@ pub trait LucetcOpts {
     fn opt_level(&mut self, opt_level: OptLevel);
     fn with_opt_level(self, opt_level: OptLevel) -> Self;
 
+    fn cpu_features(&mut self, cpu_features: CpuFeatures);
+    fn with_cpu_features(self, cpu_features: CpuFeatures) -> Self;
+
     fn builtins<P: AsRef<Path>>(&mut self, builtins_path: P);
     fn with_builtins<P: AsRef<Path>>(self, builtins_path: P) -> Self;
+
+    fn validator(&mut self, validator: Validator);
+    fn with_validator(self, validator: Validator) -> Self;
 
     fn min_reserved_size(&mut self, min_reserved_size: u64);
     fn with_min_reserved_size(self, min_reserved_size: u64) -> Self;
@@ -123,6 +131,15 @@ impl<T: AsLucetc> LucetcOpts for T {
         self
     }
 
+    fn cpu_features(&mut self, cpu_features: CpuFeatures) {
+        self.as_lucetc().cpu_features = cpu_features;
+    }
+
+    fn with_cpu_features(mut self, cpu_features: CpuFeatures) -> Self {
+        self.cpu_features(cpu_features);
+        self
+    }
+
     fn builtins<P: AsRef<Path>>(&mut self, builtins_path: P) {
         self.as_lucetc()
             .builtins_paths
@@ -131,6 +148,15 @@ impl<T: AsLucetc> LucetcOpts for T {
 
     fn with_builtins<P: AsRef<Path>>(mut self, builtins_path: P) -> Self {
         self.builtins(builtins_path);
+        self
+    }
+
+    fn validator(&mut self, validator: Validator) {
+        self.as_lucetc().validator = Some(validator);
+    }
+
+    fn with_validator(mut self, validator: Validator) -> Self {
+        self.validator(validator);
         self
     }
 
@@ -224,8 +250,10 @@ impl Lucetc {
             input: LucetcInput::Path(input.to_owned()),
             bindings: vec![],
             opt_level: OptLevel::default(),
+            cpu_features: CpuFeatures::default(),
             heap: HeapSettings::default(),
             builtins_paths: vec![],
+            validator: None,
             pk: None,
             sk: None,
             sign: false,
@@ -240,8 +268,10 @@ impl Lucetc {
             input: LucetcInput::Bytes(input),
             bindings: vec![],
             opt_level: OptLevel::default(),
+            cpu_features: CpuFeatures::default(),
             heap: HeapSettings::default(),
             builtins_paths: vec![],
+            validator: None,
             pk: None,
             sk: None,
             sign: false,
@@ -284,9 +314,11 @@ impl Lucetc {
         let compiler = Compiler::new(
             &module_contents,
             self.opt_level,
+            self.cpu_features.clone(),
             &bindings,
             self.heap.clone(),
             self.count_instructions,
+            &self.validator,
         )?;
         let obj = compiler.object_file()?;
 
@@ -300,9 +332,11 @@ impl Lucetc {
         let compiler = Compiler::new(
             &module_contents,
             self.opt_level,
+            self.cpu_features.clone(),
             &bindings,
             self.heap.clone(),
             self.count_instructions,
+            &self.validator,
         )?;
 
         compiler

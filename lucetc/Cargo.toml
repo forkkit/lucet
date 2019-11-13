@@ -1,6 +1,6 @@
 [package]
 name = "lucetc"
-version = "0.1.1"
+version = "0.4.1"
 description = "Fastly's WebAssembly to native code compiler"
 homepage = "https://github.com/fastly/lucet"
 repository = "https://github.com/fastly/lucet"
@@ -9,37 +9,55 @@ categories = ["wasm"]
 authors = ["Lucet team <lucet@fastly.com>"]
 edition = "2018"
 
-[lib]
-crate-type=["rlib"]
-
 [[bin]]
 name = "lucetc"
-path = "src/main.rs"
+path = "lucetc/main.rs"
 
 [dependencies]
 bincode = "1.1.4"
-cranelift-codegen = { path = "../cranelift/cranelift-codegen", version = "0.41.0" }
-cranelift-entity = { path = "../cranelift/cranelift-entity", version = "0.41.0" }
-cranelift-native = { path = "../cranelift/cranelift-native", version = "0.41.0" }
-cranelift-frontend = { path = "../cranelift/cranelift-frontend", version = "0.41.0" }
-cranelift-module = { path = "../cranelift/cranelift-module", version = "0.41.0" }
-cranelift-faerie = { path = "../cranelift/cranelift-faerie", version = "0.41.0" }
-cranelift-wasm = { path = "../cranelift/cranelift-wasm", version = "0.41.0" }
+cranelift-codegen = { path = "../cranelift/cranelift-codegen", version = "0.46.1" }
+cranelift-entity = { path = "../cranelift/cranelift-entity", version = "0.46.1" }
+cranelift-native = { path = "../cranelift/cranelift-native", version = "0.46.1" }
+cranelift-frontend = { path = "../cranelift/cranelift-frontend", version = "0.46.1" }
+cranelift-module = { path = "../cranelift/cranelift-module", version = "0.46.1" }
+cranelift-faerie = { path = "../cranelift/cranelift-faerie", version = "0.46.1" }
+cranelift-wasm = { path = "../cranelift/cranelift-wasm", version = "0.46.1" }
 target-lexicon = "0.8.0"
-lucet-module = { path = "../lucet-module", version = "0.1.1" }
-wasmparser = "0.37.0"
+lucet-module = { path = "../lucet-module", version = "0.4.1" }
+lucet-validate = { path = "../lucet-validate", version = "0.4.1" }
+wasmparser = "0.39.1"
 clap="2.32"
 log = "0.4"
 env_logger = "0.6"
 faerie = "0.11.0"
-goblin = "0.0.22"
+goblin = "0.0.24"
 failure = "0.1"
 byteorder = "1.2"
-wasmonkey = { path = "../lucet-builtins/wasmonkey", version = "0.1.7" }
-wabt = "0.7"
+# precisely pin wasmonkey, because the shared dependency on parity-wasm is very sensitive
+wasmonkey = "=0.1.9"
+wabt = "0.9.2"
 tempfile = "3.0"
 bimap = "0.2"
 human-size = "0.4"
-parity-wasm = "0.38"
+# must match wasmonkey's version specifier
+parity-wasm = "0.41"
 minisign = "0.5.11"
 memoffset = "0.5.1"
+serde = "1.0"
+serde_json = "1.0"
+raw-cpuid = "6.0.0"
+
+[package.metadata.deb]
+name = "fst-lucetc"
+maintainer = "Lucet team <lucet@fastly.com>"
+depends = "$auto"
+priority = "optional"
+assets = [
+    ["target/release/lucetc", "/opt/fst-lucetc/bin/lucetc", "755"],
+    ["target/release/liblucetc.rlib", "/opt/fst-lucetc/lib/", "644"],
+    ["LICENSE", "/opt/fst-lucetc/share/doc/lucetc/", "644"],
+    ["../wasi/phases/unstable/witx/typenames.witx",
+     "/opt/fst-lucetc/share/wasi/unstable/typenames.witx", "644"],
+    ["../wasi/phases/unstable/witx/wasi_unstable_preview0.witx",
+     "/opt/fst-lucetc/share/wasi/unstable/wasi_unstable_preview0.witx", "644"],
+]

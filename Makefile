@@ -21,7 +21,11 @@ install-dev: build-dev
 	@helpers/install.sh --unoptimized
 
 .PHONY: test
-test: indent-check
+test: indent-check test-except-fuzz test-fuzz
+
+.PHONY: test-except-fuzz
+test-except-fuzz:
+	cargo build -p lucet-spectest # build but *not* run spectests to mitigate bitrot while spectests don't pass
 	cargo test --no-fail-fast \
             -p lucet-runtime-internals \
             -p lucet-runtime \
@@ -30,14 +34,20 @@ test: indent-check
             -p lucet-idl \
             -p lucet-wasi-sdk \
             -p lucet-wasi \
-            -p lucet-benchmarks
-    # run a single seed through the fuzzer to stave off bitrot
-	cargo run -p lucet-wasi-fuzz -- test-seed 410757864950
+            -p lucet-wasi-fuzz \
+            -p lucet-validate
+	cargo test --benches -p lucet-benchmarks -- --test # run the benchmarks in debug mode
 	helpers/lucet-toolchain-tests/signature.sh
 
+# run a single seed through the fuzzer to stave off bitrot
+.PHONY: test-fuzz
+test-fuzz:
+	cargo run -p lucet-wasi-fuzz -- test-seed 410757864950
+
+FUZZ_NUM_TESTS?=1000
 .PHONY: fuzz
 fuzz:
-	cargo run --release -p lucet-wasi-fuzz -- fuzz --num-tests=1000
+	cargo run --release -p lucet-wasi-fuzz -- fuzz --num-tests=$(FUZZ_NUM_TESTS)
 
 .PHONY: bench
 bench:
@@ -73,4 +83,5 @@ watch:
             -p lucet-idl \
             -p lucet-wasi-sdk \
             -p lucet-wasi \
-            -p lucet-benchmarks"
+            -p lucet-benchmarks \
+            -p lucet-validate"

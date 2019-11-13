@@ -7,6 +7,9 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+/// Common definiton of OptLevel
+const BENCHMARK_OPT_LEVEL: OptLevel = OptLevel::SpeedAndSize;
+
 const DENSE_HEAP_SIZES_KB: &'static [usize] =
     &[0, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2 * 1024, 4 * 1024];
 
@@ -21,6 +24,7 @@ const SPARSE_HEAP_SIZES_KB: &'static [usize] = &[0, 256, 512, 1024, 2 * 1024, 4 
 /// To minimize the effects of filesystem cache on the `DlModule::load()`, this runs `sync` between
 /// each iteration.
 fn hello_load_mkregion_and_instantiate<R: RegionCreate + 'static>(c: &mut Criterion) {
+    lucet_wasi::export_wasi_funcs();
     fn body<R: RegionCreate + 'static>(so_file: &Path) -> InstanceHandle {
         let module = DlModule::load(so_file).unwrap();
         let region = R::create(1, &Limits::default()).unwrap();
@@ -30,7 +34,7 @@ fn hello_load_mkregion_and_instantiate<R: RegionCreate + 'static>(c: &mut Criter
     let workdir = TempDir::new().expect("create working directory");
 
     let so_file = workdir.path().join("out.so");
-    compile_hello(&so_file, OptLevel::Fast);
+    compile_hello(&so_file, BENCHMARK_OPT_LEVEL);
 
     c.bench_function(
         &format!("hello_load_mkregion_and_instantiate ({})", R::TYPE_NAME),
@@ -58,7 +62,7 @@ fn hello_instantiate<R: RegionCreate + 'static>(c: &mut Criterion) {
     let workdir = TempDir::new().expect("create working directory");
 
     let so_file = workdir.path().join("out.so");
-    compile_hello(&so_file, OptLevel::Fast);
+    compile_hello(&so_file, BENCHMARK_OPT_LEVEL);
 
     let module = DlModule::load(&so_file).unwrap();
     let region = R::create(1, &Limits::default()).unwrap();
@@ -126,7 +130,7 @@ fn hello_drop_instance<R: RegionCreate + 'static>(c: &mut Criterion) {
     let workdir = TempDir::new().expect("create working directory");
 
     let so_file = workdir.path().join("out.so");
-    compile_hello(&so_file, OptLevel::Fast);
+    compile_hello(&so_file, BENCHMARK_OPT_LEVEL);
 
     let module = DlModule::load(&so_file).unwrap();
     let region = R::create(1, &Limits::default()).unwrap();
@@ -247,7 +251,7 @@ fn run_hello<R: RegionCreate + 'static>(c: &mut Criterion) {
     let workdir = TempDir::new().expect("create working directory");
 
     let so_file = workdir.path().join("out.so");
-    compile_hello(&so_file, OptLevel::Fast);
+    compile_hello(&so_file, BENCHMARK_OPT_LEVEL);
 
     let module = DlModule::load(&so_file).unwrap();
     let region = R::create(1, &Limits::default()).unwrap();
@@ -255,10 +259,10 @@ fn run_hello<R: RegionCreate + 'static>(c: &mut Criterion) {
     c.bench_function(&format!("run_hello ({})", R::TYPE_NAME), move |b| {
         b.iter_batched_ref(
             || {
-                let null = std::fs::File::open("/dev/null").unwrap();
                 let ctx = WasiCtxBuilder::new()
-                    .args(&["hello"])
-                    .fd(1, null)
+                    .expect("create a new WASI context")
+                    .args(["hello"].iter())
+                    .expect("WASI arguments")
                     .build()
                     .unwrap();
                 region

@@ -1,23 +1,23 @@
-# Lucet version 0.1.1
+# Lucet version 0.3.1
 
 [workspace]
 members = [
-  "lucet-analyze",
+  "benchmarks/lucet-benchmarks",
   "lucet-idl",
-  "lucet-idl/witx-frontend",
   "lucet-idl/lucet-idl-test",
   "lucet-idl/lucet-idl-test/resources/rust_host",
   "lucet-module",
+  "lucet-objdump",
   "lucet-runtime",
   "lucet-runtime/lucet-runtime-internals",
   "lucet-runtime/lucet-runtime-tests",
   "lucet-spectest",
+  "lucet-validate",
   "lucet-wasi",
   "lucet-wasi-fuzz",
   "lucet-wasi-sdk",
   "lucetc",
   "sightglass",
-  "benchmarks/lucet-benchmarks",
 ]
 exclude = ["cranelift"]
 
